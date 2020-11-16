@@ -50,6 +50,12 @@ void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
 
+void my_send(int client, char *buf, size_t len, int flags)
+{
+  send(client, (void *)buf, len, 0);
+  printf("# send:%s", buf);
+}
+
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
  * return.  Process the request appropriately.
@@ -80,9 +86,11 @@ void accept_request(int client)
   }
   method[i] = '\0';
 
-  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法
+  //如果请求的方法不是 GET 或 POST 任意一个的话就直接发送 response 告诉客户端没实现该方法。
+  //strcasecmp 忽略大小写比较s1 s2，若参数s1和s2字符串相等则返回0。s1大于s2则返回大于0 的值，s1 小于s2 则返回小于0的值。
   if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
   {
+    printf("send unimplemented.....\r\n");
     unimplemented(client);
     return;
   }
@@ -96,7 +104,7 @@ void accept_request(int client)
   while (ISspace(buf[j]) && (j < sizeof(buf)))
     j++;
 
-  //然后把 URL 读出来放到 url 数组中
+  //然后把 URL 读出来放到 url 数组中(资源的路径)
   while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)))
   {
     url[i] = buf[j];
@@ -128,7 +136,7 @@ void accept_request(int client)
   }
 
   //将前面分隔两份的前面那份字符串，拼接在字符串htdocs的后面之后就输出存储到数组 path 中。相当于现在 path 中存储着一个字符串
-  sprintf(path, "htdocs%s", url);
+  sprintf(path, "htdocs%s", url); /* 资源存在的路径 */
 
   //如果 path 数组中的这个字符串的最后一个字符是以字符 / 结尾的话，就拼接上一个"index.html"的字符串。首页的意思
   if (path[strlen(path) - 1] == '/')
@@ -178,15 +186,15 @@ void bad_request(int client)
   char buf[1024];
 
   sprintf(buf, "HTTP/1.0 400 BAD REQUEST\r\n");
-  send(client, buf, sizeof(buf), 0);
+  my_send(client, buf, sizeof(buf), 0);
   sprintf(buf, "Content-type: text/html\r\n");
-  send(client, buf, sizeof(buf), 0);
+  my_send(client, buf, sizeof(buf), 0);
   sprintf(buf, "\r\n");
-  send(client, buf, sizeof(buf), 0);
+  my_send(client, buf, sizeof(buf), 0);
   sprintf(buf, "<P>Your browser sent a bad request, ");
-  send(client, buf, sizeof(buf), 0);
+  my_send(client, buf, sizeof(buf), 0);
   sprintf(buf, "such as a POST without a Content-Length.\r\n");
-  send(client, buf, sizeof(buf), 0);
+  my_send(client, buf, sizeof(buf), 0);
 }
 
 /**********************************************************************/
@@ -204,7 +212,7 @@ void cat(int client, FILE *resource)
   fgets(buf, sizeof(buf), resource);
   while (!feof(resource))
   {
-    send(client, buf, strlen(buf), 0);
+    my_send(client, buf, strlen(buf), 0);
     fgets(buf, sizeof(buf), resource);
   }
 }
@@ -218,13 +226,13 @@ void cannot_execute(int client)
   char buf[1024];
 
   sprintf(buf, "HTTP/1.0 500 Internal Server Error\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "Content-type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "<P>Error prohibited CGI execution.\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
@@ -288,7 +296,7 @@ void execute_cgi(int client, const char *path,
   }
 
   sprintf(buf, "HTTP/1.0 200 OK\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
 
   //下面这里创建两个管道，用于两个进程间通信
   if (pipe(cgi_output) < 0)
@@ -319,7 +327,7 @@ void execute_cgi(int client, const char *path,
     //dup2()包含<unistd.h>中，参读《TLPI》P97
     //将子进程的输出由标准输出重定向到 cgi_ouput 的管道写端上
     dup2(cgi_output[1], 1);
-    //将子进程的输出由标准输入重定向到 cgi_ouput 的管道读端上
+    //将子进程的输入由标准输入重定向到 cgi_input 的管道读端上
     dup2(cgi_input[0], 0);
     //关闭 cgi_ouput 管道的读端与cgi_input 管道的写端
     close(cgi_output[0]);
@@ -356,16 +364,22 @@ void execute_cgi(int client, const char *path,
 
     //如果是 POST 方法的话就继续读 body 的内容，并写到 cgi_input 管道里让子进程去读
     if (strcasecmp(method, "POST") == 0)
+    {
+      printf("\r\n@read:",c);
       for (i = 0; i < content_length; i++)
       {
         recv(client, &c, 1, 0);
+        printf("%c",c);
         write(cgi_input[1], &c, 1);
       }
-
+    }
+    printf("\r\n#send:");
     //然后从 cgi_output 管道中读子进程的输出，并发送到客户端去
     while (read(cgi_output[0], &c, 1) > 0)
+    {
       send(client, &c, 1, 0);
-
+      printf("%c",c);
+    }
     //关闭管道
     close(cgi_output[0]);
     close(cgi_input[1]);
@@ -419,6 +433,7 @@ int get_line(int sock, char *buf, int size)
   }
   buf[i] = '\0';
 
+  printf("> read_line:%s", buf);
   return (i);
 }
 
@@ -433,13 +448,13 @@ void headers(int client, const char *filename)
   (void)filename; /* could use filename to determine file type */
 
   strcpy(buf, "HTTP/1.0 200 OK\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   strcpy(buf, SERVER_STRING);
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "Content-Type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   strcpy(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
@@ -450,23 +465,23 @@ void not_found(int client)
   char buf[1024];
 
   sprintf(buf, "HTTP/1.0 404 NOT FOUND\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, SERVER_STRING);
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "Content-Type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "<HTML><TITLE>Not Found</TITLE>\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "<BODY><P>The server could not fulfill\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "your request because the resource specified\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "is unavailable or nonexistent.\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "</BODY></HTML>\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
@@ -565,21 +580,21 @@ void unimplemented(int client)
   char buf[1024];
 
   sprintf(buf, "HTTP/1.0 501 Method Not Implemented\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, SERVER_STRING);
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "Content-Type: text/html\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "<HTML><HEAD><TITLE>Method Not Implemented\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "</TITLE></HEAD>\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "<BODY><P>HTTP request method not supported.\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
   sprintf(buf, "</BODY></HTML>\r\n");
-  send(client, buf, strlen(buf), 0);
+  my_send(client, buf, strlen(buf), 0);
 }
 
 /**********************************************************************/
